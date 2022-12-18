@@ -1,0 +1,9 @@
+domain: shubhindia.xyz
+layout:
+- go.kubebuilder.io/v3
+plugins:
+  manifests.sdk.operatorframework.io/v2: {}
+  scorecard.sdk.operatorframework.io/v2: {}
+projectName: spot-operator
+repo: github.com/shubhindia/spot-operator
+version: "3"
