@@ -6,4 +6,9 @@ plugins:
   scorecard.sdk.operatorframework.io/v2: {}
 projectName: spot-operator
 repo: github.com/shubhindia/spot-operator
+resources:
+- controller: true
+  domain: shubhindia.xyz
+  kind: SpotInstance
+  version: v1alpha1
 version: "3"
