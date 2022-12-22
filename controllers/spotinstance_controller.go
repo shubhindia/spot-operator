@@ -19,10 +19,16 @@ package controllers
 import (
 	"context"
 
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
 // SpotInstanceReconciler reconciles a SpotInstance object
@@ -47,16 +53,36 @@ type SpotInstanceReconciler struct {
 func (r *SpotInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = log.FromContext(ctx)
 
-	// TODO(user): your logic here
-
 	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SpotInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		// Uncomment the following line adding a pointer to an instance of the controlled resource as an argument
-		// For().
-
+		// Using v1.Pod here for faster testing. Since, both pod and node are part of core APIs
+		// it will be easier to replace pod with node once I am done with initial logic
+		For(&v1.Pod{}).
+		Watches(
+			&source.Kind{Type: &v1.Pod{}},
+			handler.EnqueueRequestsFromMapFunc(r.markPreemptiveInstance),
+		).
+		WithEventFilter(
+			predicate.Funcs{
+				CreateFunc: func(ce event.CreateEvent) bool {
+					return true
+				},
+				DeleteFunc: func(de event.DeleteEvent) bool {
+					return true
+				},
+				UpdateFunc: func(ue event.UpdateEvent) bool {
+					return false
+				},
+			},
+		).
 		Complete(r)
+}
+
+func (r *SpotInstanceReconciler) markPreemptiveInstance(o client.Object) []reconcile.Request {
+
+	return nil
 }
