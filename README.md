@@ -1,3 +1,7 @@
+## Note
+This is a WIP project and I don't recommend to use it anywhere apart from testing cluster.
+
+PS - I tend to force push a lot until I get initial functionality right.
 # spot-operator
 A simple watcher to keep watch on spot (preemptive) instances which are configured as kubernetes nodes.
 
