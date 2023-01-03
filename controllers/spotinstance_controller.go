@@ -18,28 +18,39 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/runtime"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
 // SpotInstanceReconciler reconciles a SpotInstance object
 type SpotInstanceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	log    logr.Logger
+}
+
+// patchStringValue holds the patch for a node
+type patchStringValue struct {
+	Op    string `json:"op"`
+	Path  string `json:"path"`
+	Value string `json:"value"`
 }
 
 //+kubebuilder:rbac:groups=shubhindia.xyz,resources=spotinstances,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=shubhindia.xyz,resources=spotinstances/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=shubhindia.xyz,resources=spotinstances/finalizers,verbs=update
+//+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -51,38 +62,56 @@ type SpotInstanceReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.13.0/pkg/reconcile
 func (r *SpotInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	r.log = log.FromContext(ctx).WithValues("Spot-operator", "all")
 
-	return ctrl.Result{}, nil
+	// get all nodes
+	nodes := &v1.NodeList{}
+
+	_ = r.Client.List(ctx, nodes)
+
+	payload := []patchStringValue{{
+		Op:    "replace",
+		Path:  "/spec/unschedulable",
+		Value: "True",
+	}}
+	payloadBytes, _ := json.Marshal(payload)
+
+	r.Client.Patch(ctx, &v1.Node{}, client.RawPatch(types.JSONPatchType, payloadBytes))
+
+	for _, node := range nodes.Items {
+
+		// check for preemtible node label
+		if node.Labels["cloud.google.com/gke-preemptible"] == "true" {
+
+			// only cordon node if it was created 23 hours ago and is not already cordoned
+			if time.Since(node.CreationTimestamp.Time) > 23*time.Hour && !node.Spec.Unschedulable {
+				err := r.Client.Patch(ctx, &v1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: node.Name,
+					},
+					Spec: v1.NodeSpec{
+						Unschedulable: true,
+					},
+				}, client.Merge)
+
+				if err != nil {
+					r.log.Info(fmt.Sprintf("Unable to cordon node %s", node.Name))
+
+				}
+				r.log.Info(fmt.Sprintf("Successfully cordoned node %s", node.Name))
+			}
+		}
+
+	}
+
+	return ctrl.Result{
+		RequeueAfter: 5 * time.Minute,
+	}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SpotInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		// Using v1.Pod here for faster testing. Since, both pod and node are part of core APIs
-		// it will be easier to replace pod with node once I am done with initial logic
-		For(&v1.Pod{}).
-		Watches(
-			&source.Kind{Type: &v1.Pod{}},
-			handler.EnqueueRequestsFromMapFunc(r.markPreemptiveInstance),
-		).
-		WithEventFilter(
-			predicate.Funcs{
-				CreateFunc: func(ce event.CreateEvent) bool {
-					return true
-				},
-				DeleteFunc: func(de event.DeleteEvent) bool {
-					return true
-				},
-				UpdateFunc: func(ue event.UpdateEvent) bool {
-					return false
-				},
-			},
-		).
+		For(&v1.Node{}).
 		Complete(r)
-}
-
-func (r *SpotInstanceReconciler) markPreemptiveInstance(o client.Object) []reconcile.Request {
-
-	return nil
 }
