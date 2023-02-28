@@ -13,7 +13,8 @@ RUN go mod download
 
 # Copy the go source
 COPY main.go main.go
-COPY api/ api/
+# We don't have a resource, hence no need to copy api/ directory
+# COPY api/ api/
 COPY controllers/ controllers/
 
 # Build
