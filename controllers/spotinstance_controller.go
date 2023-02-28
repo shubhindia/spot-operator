@@ -18,13 +18,11 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -38,13 +36,6 @@ type SpotInstanceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	log    logr.Logger
-}
-
-// patchStringValue holds the patch for a node
-type patchStringValue struct {
-	Op    string `json:"op"`
-	Path  string `json:"path"`
-	Value string `json:"value"`
 }
 
 //+kubebuilder:rbac:groups=shubhindia.xyz,resources=spotinstances,verbs=get;list;watch;create;update;patch;delete
@@ -68,15 +59,6 @@ func (r *SpotInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	nodes := &v1.NodeList{}
 
 	_ = r.Client.List(ctx, nodes)
-
-	payload := []patchStringValue{{
-		Op:    "replace",
-		Path:  "/spec/unschedulable",
-		Value: "True",
-	}}
-	payloadBytes, _ := json.Marshal(payload)
-
-	r.Client.Patch(ctx, &v1.Node{}, client.RawPatch(types.JSONPatchType, payloadBytes))
 
 	for _, node := range nodes.Items {
 
