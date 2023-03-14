@@ -22,10 +22,12 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/jellydator/ttlcache/v3"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	nodeCache "github.com/shubhindia/spot-operator/controllers/utils/cache"
 	gcpUtils "github.com/shubhindia/spot-operator/controllers/utils/gcp"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,6 +39,7 @@ type SpotInstanceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	log    logr.Logger
+	Cache  *ttlcache.Cache[string, nodeCache.PreemptibleNodeDetails]
 }
 
 //+kubebuilder:rbac:groups=shubhindia.xyz,resources=spotinstances,verbs=get;list;watch;create;update;patch;delete
@@ -70,7 +73,7 @@ func (r *SpotInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if node.Labels["cloud.google.com/gke-preemptible"] == "true" {
 
 			// only cordon node if it was created 23 hours ago and is not already cordoned
-			if time.Since(node.CreationTimestamp.Time) > 23*time.Minute && !node.Spec.Unschedulable {
+			if time.Since(node.CreationTimestamp.Time) > 23*time.Hour && !node.Spec.Unschedulable {
 				err := r.Client.Patch(ctx, &v1.Node{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: node.Name,
@@ -89,6 +92,7 @@ func (r *SpotInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				// mark node for deletion since its already passed its 23 hours mark and is already cordoned
 				nodesForDeletetion = append(nodesForDeletetion, node)
 			}
+			nodesForDeletetion = append(nodesForDeletetion, node)
 
 		}
 	}
@@ -114,16 +118,32 @@ func (r *SpotInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				// Draining a node hasn't been in implemented in go-client yet. So for now, we directly delete the node
 				// as the code itself is tailored for our specific use-case.
 				// TODO: Add custom function for draining the node first.
-				r.log.Info(fmt.Sprintf("Deleting unerlying VM for node %s", node.Name))
 
-				// Our end goal here is to reset the preemptible node clock
-				// https://cloud.google.com/compute/docs/instances/preemptible#preemption-selection
-				// Since, these nodes are part of a node-pool, we can directly delete them and cluster-autoscaler will take care of bringing the cluster up to desired state.
+				// add the nodeName and update its deletion status in cache
+				hit := r.Cache.Get(node.Name)
 
-				// TODO: Maintain a cache about nodes which are deleted previously.
-				err = gcpUtils.DeleteNode("mobile-ci-infra", "asia-east1-a", node.Name)
-				if err != nil {
-					r.log.Error(err, fmt.Sprintf("Failed to delete instance %s", node.Name))
+				// if hit is nil, mark it for deletion
+				if hit == nil {
+					r.Cache.Set(node.Name, nodeCache.PreemptibleNodeDetails{MarkedToBeDeleted: true, TimeSinceCordon: time.Now()}, ttlcache.DefaultTTL)
+					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+				}
+				if (hit.Value().MarkedToBeDeleted && time.Since(hit.Value().TimeSinceCordon) > 1*time.Hour) || !hit.Value().DeletionSuccess {
+					// Delete the node from k8s cluster first
+					r.Client.Delete(ctx, &node)
+
+					// Our end goal here is to reset the preemptible node clock
+					// https://cloud.google.com/compute/docs/instances/preemptible#preemption-selection
+					// Since, these nodes are part of a node-pool, we can directly delete them and cluster-autoscaler will take care of bringing the cluster up to desired state.
+
+					r.log.Info(fmt.Sprintf("Deleting instance: %s", node.Name))
+
+					// TODO: Write an initialiser to get all the necessary values
+					err = gcpUtils.DeleteNode("to-be-picked-from-env", "to-be-picked-from-env", node.Name)
+					if err != nil {
+						r.log.Error(err, fmt.Sprintf("Failed to delete instance %s", node.Name))
+						r.Cache.Set(node.Name, nodeCache.PreemptibleNodeDetails{MarkedToBeDeleted: true, TimeSinceCordon: time.Now()}, ttlcache.DefaultTTL)
+					}
+					r.Cache.Set(node.Name, nodeCache.PreemptibleNodeDetails{MarkedToBeDeleted: true, DeletionSuccess: true, TimeSinceCordon: time.Now()}, ttlcache.DefaultTTL)
 				}
 			}
 		}
@@ -137,6 +157,11 @@ func (r *SpotInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SpotInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	NodeCache := nodeCache.Cache()
+	go NodeCache.Start()
+	r.Cache = NodeCache
+	defer NodeCache.Stop()
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1.Node{}).
 		Complete(r)

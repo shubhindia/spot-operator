@@ -6,8 +6,16 @@ import (
 	ttlcache "github.com/jellydator/ttlcache/v3"
 )
 
-func Cache() *ttlcache.Cache[string, bool] {
-	return ttlcache.New[string, bool](
-		ttlcache.WithTTL[string, bool](24 * time.Hour),
+type PreemptibleNodeDetails struct {
+	MarkedToBeDeleted bool
+	DeletionSuccess   bool
+	TimeSinceCordon   time.Time
+}
+
+var NodeCache *ttlcache.Cache[string, PreemptibleNodeDetails]
+
+func Cache() *ttlcache.Cache[string, PreemptibleNodeDetails] {
+	return ttlcache.New[string, PreemptibleNodeDetails](
+		ttlcache.WithTTL[string, PreemptibleNodeDetails](24 * time.Hour),
 	)
 }
